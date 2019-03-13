@@ -2,6 +2,12 @@
 
   <PropertyGroup>
     <TargetFramework>netcoreapp2.2</TargetFramework>
+    <Authors>argonaut</Authors>
+    <Description>Port of https://github.com/IdeaBlade/Breeze/tree/master/Breeze.ContextProvider.EF6 to EF Core</Description>
+    <PackageProjectUrl>https://github.com/mikalatte/breeze-dotnetcore</PackageProjectUrl>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <Copyright></Copyright>
+    <PackageLicenseUrl></PackageLicenseUrl>
   </PropertyGroup>
 
   <ItemGroup>

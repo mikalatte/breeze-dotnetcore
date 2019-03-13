@@ -18,7 +18,7 @@ using Newtonsoft.Json.Linq;
 using Microsoft.EntityFrameworkCore;
 
 using Breeze.ContextProvider;
-
+using Microsoft.Data.Edm.Csdl;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Internal;
@@ -36,19 +36,40 @@ namespace Breeze.ContextProvider.EFCore
 
     // T is either a subclass of DbContext or a subclass of DbContext
     public class EFContextProvider<T> : Breeze.ContextProvider.ContextProvider, IEFContextProvider
+        where T : DbContext
     {
         private IConfiguration _configuration;
 
-        public EFContextProvider(DbContext context, IConfiguration configuration)
+        public EFContextProvider(T context, IConfiguration configuration)
         {
             _configuration = configuration;
-            Context = context;
+            _context = context;
         }
+
+        private void SetOriginalValues(Dictionary<Type, List<EntityInfo>> arg)
+        {
+            foreach (var type in arg.Keys)
+            {
+                var entityInfos = arg[type];
+                foreach (var entityInfo in entityInfos)
+                {
+                    var originalValues = Context.Entry(entityInfo.Entity).GetDatabaseValues();
+
+                    entityInfo.OriginalEntity = originalValues?.ToObject();
+                }
+            }
+
+        }
+
         
 
-        public DbContext Context { get; set; }
+        public DbContext Context
+        {
+            get { return _context; }
 
-        private T _context;
+        }
+
+        protected T _context;
 
 
         /// <summary>Gets the EntityConnection from the DbContext.</summary>
@@ -151,12 +172,12 @@ namespace Breeze.ContextProvider.EFCore
 
         public object[] GetKeyValues(object entity)
         {
-            
-            if(Context.Model.FindEntityType(entity.GetType()) == null)
+
+            if (Context.Model.FindEntityType(entity.GetType()) == null)
                 throw new ArgumentException("EntitySet not found for type " + entity.GetType());
-            
+
             var entry = Context.Entry(entity);
-            
+
             var keyProps = entry.Metadata.FindPrimaryKey().Properties.Select(p => entry.Property(p.Name))
                 .ToArray();
             if (!entry.IsKeySet)
@@ -164,15 +185,17 @@ namespace Breeze.ContextProvider.EFCore
                 foreach (var prop in keyProps)
                 {
                     prop.CurrentValue = Guid.NewGuid();
-                } 
+                }
             }
             var key = keyProps.Select(kp => kp.CurrentValue).ToArray();
             return key;
         }
 
+
         protected override void SaveChangesCore(SaveWorkState saveWorkState)
         {
             var saveMap = saveWorkState.SaveMap;
+            SetOriginalValues(saveMap);
             var deletedEntities = ProcessSaves(saveMap);
 
             if (deletedEntities.Any())
@@ -184,9 +207,9 @@ namespace Breeze.ContextProvider.EFCore
             int count;
             try
             {
-                
-                    count = Context.SaveChanges(true);
-                
+
+                count = Context.SaveChanges(true);
+
             }
             catch (DbUpdateException e)
             {
@@ -197,18 +220,18 @@ namespace Breeze.ContextProvider.EFCore
                     var entityTypeName = entity.GetType().FullName;
                     var keyValues = eve.Metadata.FindPrimaryKey().Properties
                         .Select(p => eve.Property(p.Name).CurrentValue).ToArray();
-                    
-                    
-                    
-                        var entityError = new EntityError()
-                        {
-                            EntityTypeName = entityTypeName,
-                            KeyValues = keyValues,
-                            ErrorMessage = e.InnerException?.Message ?? e.Message,
 
-                        };
-                        entityErrors.Add(entityError);
-                    
+
+
+                    var entityError = new EntityError()
+                    {
+                        EntityTypeName = entityTypeName,
+                        KeyValues = keyValues,
+                        ErrorMessage = e.InnerException?.Message ?? e.Message,
+
+                    };
+                    entityErrors.Add(entityError);
+
 
                 }
                 saveWorkState.EntityErrors = entityErrors;
@@ -258,7 +281,7 @@ namespace Breeze.ContextProvider.EFCore
                 foreach (EFEntityInfo entityInfo in kvp.Value)
                 {
                     // entityInfo.EFContextProvider = this;  may be needed eventually.
-                    
+
                     ProcessEntity(entityInfo);
                     if (entityInfo.EntityState == BreezeCp.EntityState.Deleted)
                     {
@@ -271,7 +294,8 @@ namespace Breeze.ContextProvider.EFCore
 
         private void ProcessAllDeleted(List<EFEntityInfo> deletedEntities)
         {
-            deletedEntities.ForEach(entityInfo => {
+            deletedEntities.ForEach(entityInfo =>
+            {
 
                 RestoreOriginal(entityInfo);
                 var entry = GetObjectStateEntry(entityInfo.Entity);
@@ -292,7 +316,8 @@ namespace Breeze.ContextProvider.EFCore
                 this.KeyGenerator = GetKeyGenerator();
             }
             this.KeyGenerator.UpdateKeys(tempKeys);
-            tempKeys.ForEach(tki => {
+            tempKeys.ForEach(tki =>
+            {
                 // Clever hack - next 3 lines cause all entities related to tki.Entity to have 
                 // their relationships updated. So all related entities for each tki are updated.
                 // Basically we set the entity to look like a preexisting entity by setting its
@@ -300,7 +325,7 @@ namespace Breeze.ContextProvider.EFCore
                 // Now when we update the pk - all fks will get changed as well.  Note that the fk change will only
                 // occur during the save.
                 var entry = GetObjectStateEntry(tki.Entity);
-                
+
                 entry.State = Microsoft.EntityFrameworkCore.EntityState.Added;
                 var val = ConvertValue(tki.RealValue, tki.Property.PropertyType);
                 tki.Property.SetValue(tki.Entity, val, null);
@@ -354,10 +379,10 @@ namespace Breeze.ContextProvider.EFCore
             var entry = GetObjectStateEntry(entityInfo.Entity);
             // EntityState will be changed to modified during the update from the OriginalValuesMap
             // Do NOT change this to EntityState.Modified because this will cause the entire record to update.
-            
+
             entry.State = Microsoft.EntityFrameworkCore.EntityState.Modified;
 
-            
+
             return entry;
         }
 
@@ -389,7 +414,7 @@ namespace Breeze.ContextProvider.EFCore
             }
             var entity = entityInfo.Entity;
             var entityType = entity.GetType();
-            
+
             var keyPropertyNames = Context.Entry(entity).Metadata.FindPrimaryKey().Properties.Select(p => p.Name).ToArray();
             var ovl = entityInfo.OriginalValuesMap.ToList();
             for (var i = 0; i < ovl.Count; i++)
@@ -472,7 +497,8 @@ namespace Breeze.ContextProvider.EFCore
             // where clause is necessary in case the Entities were suppressed in the beforeSave event.
             var keyMappings = entitiesWithAutoGeneratedKeys.Cast<EFEntityInfo>()
                 .Where(entityInfo => entityInfo.ObjectStateEntry != null)
-                .Select(entityInfo => {
+                .Select(entityInfo =>
+                {
                     var autoGeneratedKey = entityInfo.AutoGeneratedKey;
                     if (autoGeneratedKey.AutoGeneratedKeyType == AutoGeneratedKeyType.Identity)
                     {
@@ -563,7 +589,7 @@ namespace Breeze.ContextProvider.EFCore
 
         //    return AddObjectStateEntry(entityInfo);
 
-            
+
 
         //}
 
@@ -598,7 +624,7 @@ namespace Breeze.ContextProvider.EFCore
             }
             catch (Exception e)
             {
-                if(errorIfNotFound)
+                if (errorIfNotFound)
                     throw new Exception("unable to add to context: " + entity);
             }
             return entry;
@@ -608,11 +634,11 @@ namespace Breeze.ContextProvider.EFCore
         #endregion
 
         #region Metadata methods
-        
-        
 
-        
-       
+
+
+
+
 
 
         protected String GetConnectionStringFromConfig(String connectionName)
@@ -623,7 +649,7 @@ namespace Breeze.ContextProvider.EFCore
 
         #endregion
 
-        
+
 
         //var entityTypes = key.MetadataWorkspace.GetItems<EntityType>(DataSpace.OSpace);
         //// note CSpace below - not OSpace - evidently the entityContainer is only in the CSpace.
@@ -649,7 +675,7 @@ namespace Breeze.ContextProvider.EFCore
 
         private const string ResourcePrefix = @"res://";
 
-        
+
     }
 
 
